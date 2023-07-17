@@ -1,0 +1,97 @@
+#FinalVersion code after Approving through SLACK_CHANNEL
+#Below code will simply run the function after slack approval and nothing will happen since none of the definitions are added
+
+from urllib.parse import parse_qs
+import json
+import os
+import boto3
+
+SLACK_VERIFICATION_TOKEN = os.environ['SLACK_VERIFICATION_TOKEN']
+
+# Triggered by API Gateway
+def lambda_handler(event, context):
+    body = parse_qs(event['body'])
+    payload = json.loads(body['payload'][0])
+
+    # Validate Slack token
+    if SLACK_VERIFICATION_TOKEN == payload['token']:
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 200,
+            "body": "{\"text\": \"The EC2 instance has been removed from the load balancer and an AMI has been created.\"}"
+        }
+    else:
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 403,
+            "body": "{\"error\": \"This request does not include a valid verification token.\"}"
+        }
+
+
+
+OR
+
+
+
+#Full code which is doing some Ec2 actions after approval
+#EC2 instance will be removed from the load balancer and an AMI will be created after approval
+#In the below code we are having some definitions for Ec2 and load balancers
+#To approve it from slack
+
+from urllib.parse import parse_qs
+import json
+import os
+import boto3
+
+SLACK_VERIFICATION_TOKEN = os.environ['SLACK_VERIFICATION_TOKEN']
+
+# Triggered by API Gateway
+def lambda_handler(event, context):
+    body = parse_qs(event['body'])
+    payload = json.loads(body['payload'][0])
+
+    # Validate Slack token
+    if SLACK_VERIFICATION_TOKEN == payload['token']:
+        instance_id = 'i-0285bd0af495a9847'  # Replace with your EC2 instance ID
+        remove_instance_from_load_balancer(instance_id)
+        create_ami(instance_id)
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 200,
+            "body": "{\"text\": \"The EC2 instance has been removed from the load balancer and an AMI has been created.\"}"
+        }
+    else:
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 403,
+            "body": "{\"error\": \"This request does not include a valid verification token.\"}"
+        }
+
+
+def remove_instance_from_load_balancer(instance_id):
+    # Code to remove the instance from the load balancer
+    elbv2 = boto3.client('elbv2')
+    target_group_arn = 'arn:aws:elasticloadbalancing:us-east-1:263167501815:targetgroup/Test-Angular/58ed4ce199c39d54'  # Replace with your target group ARN
+    
+    response = elbv2.deregister_targets(
+        TargetGroupArn=target_group_arn,
+        Targets=[
+            {
+                'Id': instance_id,
+            },
+        ]
+    )
+    print(response)
+
+
+def create_ami(instance_id):
+    # Code to create the AMI
+    ec2 = boto3.client('ec2')
+    
+    response = ec2.create_image(
+        InstanceId=instance_id,
+        Name='My server backup',
+        Description='Backup image for EC2 instance',
+        NoReboot=True
+    )
+    print(response)
