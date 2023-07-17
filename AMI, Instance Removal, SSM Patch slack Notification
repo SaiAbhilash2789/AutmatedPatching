@@ -1,0 +1,125 @@
+#Finalversion-2:Which will send notification by creating the AMI, Run patch base line
+#And add back the Ec2 instance to the load balancer
+import boto3
+from datetime import datetime
+import os
+import requests
+import json
+
+def send_slack_notification(message):
+    webhook_url = os.environ['SLACK_WEBHOOK_URL']  # Access the Slack webhook URL from environment variables
+
+    data = {
+        "text": message
+    }
+
+    response = requests.post(webhook_url, data=json.dumps(data))
+
+    if response.status_code != 200:
+        raise Exception(f"Failed to send Slack notification. Status code: {response.status_code}")
+
+def lambda_handler(event, context):
+    # Specify the necessary parameters
+    instance_ids = ["i-0285bd0af495a9847"]  # Update with your instance IDs
+    load_balancer_name = "AngularTestLB"  # Update with your load balancer name
+    ami_name = "testing1209"  # Update with your desired AMI name
+    region = "us-east-1"  # Update with your desired region
+
+    successful_responses = []
+
+    elbv2_client = boto3.client('elbv2', region_name=region)
+
+    # Retrieve the list of instances registered with the load balancer
+    response = elbv2_client.describe_target_health(TargetGroupArn='arn:aws:elasticloadbalancing:us-east-1:263167501815:targetgroup/Test-Angular/58ed4ce199c39d54')
+    registered_instances = [instance['Target']['Id'] for instance in response['TargetHealthDescriptions']]
+
+    for instance_id in instance_ids:
+        try:
+            if instance_id in registered_instances:
+                # Deregister the instance from the load balancer
+                elbv2_client.deregister_targets(
+                    TargetGroupArn='arn:aws:elasticloadbalancing:us-east-1:263167501815:targetgroup/Test-Angular/58ed4ce199c39d54',
+                    Targets=[{'Id': instance_id}]
+                )
+
+            # Create an AMI with a timestamp and day appended to the name
+            ami_name_with_timestamp = f"{ami_name}-{datetime.now().strftime('%Y%m%d-%H%M%S-%A')}"
+            ec2_client = boto3.client('ec2', region_name=region)
+            response = ec2_client.create_image(
+                InstanceId=instance_id,
+                Name=ami_name_with_timestamp,
+                NoReboot=True,
+                DryRun=False
+            )
+            ami_id = response['ImageId']
+
+            # Send a Slack notification for AMI creation
+            ami_creation_message = f"AMI created for instance: {instance_id}\nAMI ID: {ami_id}"
+            send_slack_notification(ami_creation_message)
+
+            # Wait for the AMI to be available
+            ec2_client.get_waiter('image_available').wait(
+                ImageIds=[ami_id]
+            )
+
+            # Add tags to the created AMI
+            ec2_client.create_tags(
+                Resources=[ami_id],
+                Tags=[
+                    {'Key': 'Name', 'Value': ami_name_with_timestamp}
+                ]
+            )
+
+            # Send command using Systems Manager (SSM)
+            ssm_client = boto3.client('ssm', region_name=region)
+            response = ssm_client.send_command(
+                DocumentName="AWS-RunPatchBaseline",
+                DocumentVersion="1",
+                Targets=[
+                    {'Key': 'InstanceIds', 'Values': [instance_id]}
+                ],
+                Parameters={
+                    "Operation": ["Install"],
+                    "SnapshotId": [""],
+                    "InstallOverrideList": [""],
+                    "AssociationId": [""],
+                    "BaselineOverride": [""],
+                    "RebootOption": ["RebootIfNeeded"]
+                },
+                TimeoutSeconds=600,
+                MaxConcurrency="50",
+                MaxErrors="0"
+            )
+            command_id = response['Command']['CommandId']
+
+            # Wait for the command to be executed
+            ssm_client.get_waiter('command_executed').wait(
+                InstanceId=instance_id,
+                CommandId=command_id
+            )
+
+            # Send a Slack notification after the command execution
+            command_execution_message = f"AWS-RunPatchBaseline has been executed sucessfully: {instance_id}"
+            send_slack_notification(command_execution_message)
+
+            # Register the instance back to the load balancer if it was previously registered
+            if instance_id in registered_instances:
+                elbv2_client.register_targets(
+                    TargetGroupArn='arn:aws:elasticloadbalancing:us-east-1:263167501815:targetgroup/Test-Angular/58ed4ce199c39d54',
+                    Targets=[{'Id': instance_id}]
+                )
+
+            # Store the successful response
+            successful_responses.append({"instance_id": instance_id, "ami_id": ami_id})
+
+        except Exception as e:
+            # Handle any exceptions for individual instances
+            print(f"Error processing instance {instance_id}: {str(e)}")
+
+    # Prepare the final response
+    response = {
+        "statusCode": 200,
+        "body": successful_responses  # Update with your desired response body
+    }
+
+    return response
