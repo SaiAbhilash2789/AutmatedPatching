@@ -1,0 +1,52 @@
+#Individual patch apply using the SSM run command with out waittime
+
+from datetime import datetime
+from urllib.parse import parse_qs
+import requests
+import json
+import os
+import boto3
+
+SLACK_VERIFICATION_TOKEN = os.environ['SLACK_VERIFICATION_TOKEN']
+
+# Triggered by API Gateway
+def lambda_handler(event, context):
+    body = parse_qs(event['body'])
+    payload = json.loads(body['payload'][0])
+
+    # Validate Slack token
+    if SLACK_VERIFICATION_TOKEN == payload['token']:
+        instance_ids = 'i-0285bd0af495a9847'  # Replace with your EC2 instance ID
+        execute_patch_baseline([instance_ids])
+        
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 200,
+            "body": "{\"text\": \"Patches are being applied to the EC2 instance.\"}"
+        }
+    else:
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 403,
+            "body": "{\"error\": \"This request does not include a valid verification token.\"}"
+        }
+
+
+def execute_patch_baseline(instance_ids):
+    ssm_client = boto3.client('ssm')
+    response = ssm_client.send_command(
+        DocumentName="AWS-RunPatchBaseline",
+        DocumentVersion="1",
+        Targets=[{'Key': 'InstanceIds', 'Values': instance_ids}],
+        Parameters={
+            "Operation": ["Install"],
+            "SnapshotId": [""],
+            "InstallOverrideList": [""],
+            "AssociationId": [""],
+            "BaselineOverride": [""],
+            "RebootOption": ["RebootIfNeeded"]
+        },
+        TimeoutSeconds=600,
+        MaxConcurrency="50",
+        MaxErrors="0"
+    )
