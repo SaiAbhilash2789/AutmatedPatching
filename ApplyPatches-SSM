@@ -32,8 +32,44 @@ def lambda_handler(event, context):
         }
 
 
-def execute_patch_baseline(instance_ids):
-    ssm_client = boto3.client('ssm')
+def deregister_instances(instance_ids, load_balancer_arn):
+    elbv2_client = boto3.client('elbv2')
+    response = elbv2_client.describe_target_health(TargetGroupArn=load_balancer_arn)
+    registered_instances = [instance['Target']['Id'] for instance in response['TargetHealthDescriptions']]
+    for instance_id in instance_ids:
+        if instance_id in registered_instances:
+            elbv2_client.deregister_targets(
+                TargetGroupArn=load_balancer_arn,
+                Targets=[{'Id': instance_id}]
+            )
+            deregister_waiter = elbv2_client.get_waiter('target_deregistered')
+            deregister_waiter.wait(
+                TargetGroupArn=load_balancer_arn,
+                Targets=[{'Id': instance_id}]
+            )
+
+def create_ami(instance_ids, ami_name, region):
+    ec2_client = boto3.client('ec2', region_name=region)
+    ami_ids = []
+    for instance_id in instance_ids:
+        ami_name_with_timestamp = f"{ami_name}-{datetime.now().strftime('%Y%m%d-%H%M%S-%A')}"
+        response = ec2_client.create_image(
+            InstanceId=instance_id,
+            Name=ami_name_with_timestamp,
+            NoReboot=True,
+            DryRun=False
+        )
+        ami_id = response['ImageId']
+        ami_ids.append(ami_id)
+        ec2_client.get_waiter('image_available').wait(ImageIds=[ami_id])
+        ec2_client.create_tags(
+            Resources=[ami_id],
+            Tags=[{'Key': 'Name', 'Value': ami_name_with_timestamp}]
+        )
+    return ami_ids
+
+def execute_patch_baseline(instance_ids, region):
+    ssm_client = boto3.client('ssm', region_name=region)
     response = ssm_client.send_command(
         DocumentName="AWS-RunPatchBaseline",
         DocumentVersion="1",
@@ -50,3 +86,17 @@ def execute_patch_baseline(instance_ids):
         MaxConcurrency="50",
         MaxErrors="0"
     )
+    command_id = response['Command']['CommandId']
+    ssm_client.get_waiter('command_executed').wait(InstanceId=instance_ids[0], CommandId=command_id)
+
+
+def register_instances(instance_ids, load_balancer_arn):
+    elbv2_client = boto3.client('elbv2')
+    response = elbv2_client.describe_target_health(TargetGroupArn=load_balancer_arn)
+    registered_instances = [instance['Target']['Id'] for instance in response['TargetHealthDescriptions']]
+    for instance_id in instance_ids:
+        if instance_id not in registered_instances:
+            elbv2_client.register_targets(
+                TargetGroupArn=load_balancer_arn,
+                Targets=[{'Id': instance_id}]
+            )
