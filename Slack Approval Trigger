@@ -1,0 +1,54 @@
+#This code will be responsible for triggering an another lambda function after approving it through API gateway
+# This function is triggered via API Gateway when a user acts on the Slack interactive message sent by approval_requester.py.
+
+from urllib.parse import parse_qs
+import json
+import os
+import boto3
+
+SLACK_VERIFICATION_TOKEN = os.environ['SLACK_VERIFICATION_TOKEN']
+APPROVAL_RESULT_LAMBDA_FUNCTION = 'RequestAnApprovalLambda'  # Replace with the actual Lambda function name
+
+def lambda_handler(event, context):
+    # print("Received event: " + json.dumps(event, indent=2))
+    body = parse_qs(event['body'])
+    payload = json.loads(body['payload'][0])
+
+    # Validate Slack token
+    if SLACK_VERIFICATION_TOKEN == payload['token']:
+        action_details = json.loads(payload['actions'][0]['value'])
+        approval_status = "Approved" if action_details["approve"] else "Rejected"
+
+        # Call the other Lambda function and pass the approval status
+        invoke_approval_result_lambda(approval_status)
+
+        # This will replace the interactive message with a simple text response.
+        # You can implement a more complex message update if you would like.
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 200,
+            "body": "{\"text\": \"The approval has been processed\"}"
+        }
+    else:
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 403,
+            "body": "{\"error\": \"This request does not include a valid verification token.\"}"
+        }
+
+def invoke_approval_result_lambda(approval_status):
+    client = boto3.client('lambda')
+    payload = {
+        "approval_status": approval_status
+        # Add any other data you want to pass to the other Lambda function
+    }
+
+    response = client.invoke(
+        FunctionName=APPROVAL_RESULT_LAMBDA_FUNCTION,
+        InvocationType='Event',  # Asynchronous invocation
+        Payload=json.dumps(payload)
+    )
+
+    # You can optionally process the response here if needed
+    # For asynchronous invocation, the response will not contain the result of the function execution
+    # The other Lambda function will be triggered and executed independently
