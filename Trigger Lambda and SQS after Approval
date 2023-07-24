@@ -1,0 +1,90 @@
+#Invoke and Trigger multple lambda function after Approval
+#Wait for 2 seconds after First lambda trigger before triggering Second lambda function
+
+
+import time
+from urllib.parse import parse_qs
+import json
+import os
+import boto3
+
+SLACK_VERIFICATION_TOKEN = os.environ['SLACK_VERIFICATION_TOKEN']
+FIRST_LAMBDA_FUNCTION = 'FirstLambdaFunction'  # Replace with the name of your first Lambda function
+SECOND_LAMBDA_FUNCTION = 'SecondLambdaFunction'  # Replace with the name of your second Lambda function
+SQS_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/263167501815/PatchingQueue"  # Replace this with the URL of your SQS queue
+
+def lambda_handler(event, context):
+    if 'body' in event:
+        # Request from Slack for approval processing
+        body = parse_qs(event['body'])
+        payload = json.loads(body['payload'][0])
+
+        # Validate Slack token
+        if SLACK_VERIFICATION_TOKEN == payload['token']:
+            action_details = json.loads(payload['actions'][0]['value'])
+            approval_status = "Approved" if action_details["approve"] else "Rejected"
+
+            # Call the first Lambda function and pass the approval status
+            invoke_first_lambda(approval_status)
+
+            # Wait for 2 seconds
+            time.sleep(2)
+
+            # Call the second Lambda function and pass the approval status
+            invoke_second_lambda(approval_status)
+
+            # Send instance IDs to the SQS queue after Slack approval
+            instance_ids = ["i-0285bd0af495a9847", "i-1234567890abcdef0"]
+            sqs_client = boto3.client('sqs')
+            for instance_id in instance_ids:
+                sqs_client.send_message(
+                    QueueUrl=SQS_QUEUE_URL,
+                    MessageBody=json.dumps({"instance_id": instance_id})
+                )
+
+            # This will replace the interactive message with a simple text response.
+            # You can implement a more complex message update if you would like.
+            return {
+                "isBase64Encoded": "false",
+                "statusCode": 200,
+                "body": "{\"text\": \"The approval has been processed\"}"
+            }
+        else:
+            return {
+                "isBase64Encoded": "false",
+                "statusCode": 403,
+                "body": "{\"error\": \"This request does not include a valid verification token.\"}"
+            }
+    else:
+        # If 'body' is not present, return an error response as this Lambda function is not intended for direct invocations.
+        return {
+            "isBase64Encoded": "false",
+            "statusCode": 400,
+            "body": "{\"error\": \"Bad Request. This Lambda function is not intended for direct invocations.\"}"
+        }
+
+def invoke_first_lambda(approval_status):
+    client = boto3.client('lambda')
+    payload = {
+        "approval_status": approval_status
+        # Add any other data you want to pass to the first Lambda function
+    }
+
+    response = client.invoke(
+        FunctionName=FIRST_LAMBDA_FUNCTION,
+        InvocationType='RequestResponse',  # Synchronous invocation
+        Payload=json.dumps(payload)
+    )
+
+def invoke_second_lambda(approval_status):
+    client = boto3.client('lambda')
+    payload = {
+        "approval_status": approval_status
+        # Add any other data you want to pass to the second Lambda function
+    }
+
+    response = client.invoke(
+        FunctionName=SECOND_LAMBDA_FUNCTION,
+        InvocationType='RequestResponse',  # Synchronous invocation
+        Payload=json.dumps(payload)
+    )
