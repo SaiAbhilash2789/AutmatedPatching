@@ -1,0 +1,75 @@
+#Sample code for testing the SQS functionality with slack notification to Slack
+#It will be sending the instance id to slack after approving through slack
+import os
+import json
+import requests
+import time
+
+def send_slack_message(webhook_url, message):
+    headers = {'Content-Type': 'application/json'}
+    payload = {'text': message}
+    response = requests.post(webhook_url, data=json.dumps(payload), headers=headers)
+
+    if response.status_code != 200:
+        print(f"Failed to send Slack message: {response.text}")
+        raise Exception("Slack message sending failed")
+
+def lambda_handler(event, context):
+    try:
+        # Get the Slack webhook URL from environment variables
+        webhook_url = os.environ['SLACK_WEBHOOK_URL']
+
+        # Process SQS event records
+        for record in event['Records']:
+            # Assuming your SQS messages are JSON-formatted
+            message_body = json.loads(record['body'])
+
+            # Convert the message to a JSON string
+            sqs_message = json.dumps(message_body)
+
+            # Introduce a 5-second delay
+            time.sleep(5)
+
+            # Send the message to Slack
+            send_slack_message(webhook_url, sqs_message)
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise
+
+import os
+import json
+import requests
+import time
+
+def send_slack_message(webhook_url, message):
+    headers = {'Content-Type': 'application/json'}
+    payload = {'text': message}
+    response = requests.post(webhook_url, data=json.dumps(payload), headers=headers)
+
+    if response.status_code != 200:
+        print(f"Failed to send Slack message: {response.text}")
+        raise Exception("Slack message sending failed")
+
+def lambda_handler(event, context):
+    try:
+        # Get the Slack webhook URL from environment variables
+        webhook_url = os.environ['SLACK_WEBHOOK_URL']
+
+        # Process SQS event records
+        for record in event['Records']:
+            # Assuming your SQS messages are JSON-formatted
+            message_body = json.loads(record['body'])
+
+            # Convert the message to a JSON string
+            sqs_message = json.dumps(message_body)
+
+            # Introduce a 5-second delay
+            time.sleep(5)
+
+            # Send the message to Slack
+            send_slack_message(webhook_url, sqs_message)
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise
