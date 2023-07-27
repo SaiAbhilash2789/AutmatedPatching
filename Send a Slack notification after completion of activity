@@ -1,0 +1,47 @@
+#Using this iam able to send the slack notification after the creation of AMI
+#Use this a reference for sending the message to slack after completion of activity
+
+
+import os
+import json
+import boto3
+import requests
+
+def create_ami(instance_id, ami_name):
+    ec2_client = boto3.client('ec2')
+    response = ec2_client.create_image(InstanceId=instance_id, Name=ami_name, NoReboot=True)
+    return response['ImageId']
+
+def send_slack_message(webhook_url, message):
+    headers = {'Content-Type': 'application/json'}
+    payload = {'text': message}
+    response = requests.post(webhook_url, data=json.dumps(payload), headers=headers)
+
+    if response.status_code != 200:
+        print(f"Failed to send Slack message: {response.text}")
+        raise Exception("Slack message sending failed")
+
+def lambda_handler(event, context):
+    try:
+        # Get the Slack webhook URL and EC2 instance ID from environment variables
+        webhook_url = os.environ['SLACK_WEBHOOK_URL']
+
+        # Process SQS event records
+        for record in event['Records']:
+            # Assuming your SQS messages are JSON-formatted
+            message_body = json.loads(record['body'])
+
+            # Extract EC2 instance ID and AMI name from the SQS message
+            instance_id = message_body['instance_id']
+            ami_name = message_body['ami_name']
+
+            # Create the AMI
+            ami_id = create_ami(instance_id, ami_name)
+
+            # Send the message to Slack
+            slack_message = f"AMI created with ID: {ami_id}"
+            send_slack_message(webhook_url, slack_message)
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise
