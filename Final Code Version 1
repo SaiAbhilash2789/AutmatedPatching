@@ -1,0 +1,197 @@
+Code 1: To request Approval
+
+#FinalVersion-SlackApproval-Ready
+import os
+import json
+import logging
+from urllib.request import Request, urlopen
+
+# This is passed as a plain-text environment variable for ease of demonstration.
+# Consider encrypting the value with KMS or use an encrypted parameter in Parameter Store for production deployments.
+SLACK_WEBHOOK_URL = os.environ['SLACK_WEBHOOK_URL']
+SLACK_CHANNEL = os.environ['SLACK_CHANNEL']
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
+def lambda_handler(event, context):
+    print("Received event: " + json.dumps(event, indent=2))
+
+    # Send Slack message with approval buttons
+    slack_message = {
+        "channel": SLACK_CHANNEL,
+        "text": "We can use our own text here", #It will hightlight this line text while asking the slack approval
+        "attachments": [
+            {
+                "text": "We can use our own text here", #It will hightlight this line text while asking the slack approval
+                "fallback": "You are unable to perform the action",
+                "callback_id": "ec2_removal_approval",
+                "color": "#3AA3E3",
+                "attachment_type": "default",
+                "actions": [
+                    {
+                        "name": "remove_instances",
+                        "text": "Yes",
+                        "style": "danger",
+                        "type": "button",
+                        "value": json.dumps({"approve": True}),
+                        "confirm": {
+                            "title": "Are you sure?",
+                            "text": "This will remove the instances from the load balancer",
+                            "ok_text": "Yes",
+                            "dismiss_text": "No"
+                        }
+                    },
+                    {
+                        "name": "remove_instances",
+                        "text": "No",
+                        "type": "button",
+                        "value": json.dumps({"approve": False})
+                    }
+                ]
+            }
+        ]
+    }
+
+    req = Request(SLACK_WEBHOOK_URL, json.dumps(slack_message).encode('utf-8'))
+    response = urlopen(req)
+    response.read()
+
+    return None
+
+
+
+
+
+
+Code-2 : To approve it and send messages to SQS
+import boto3
+import json
+
+def send_sqs_message(queue_url, message_body):
+    sqs_client = boto3.client('sqs')
+    response = sqs_client.send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps(message_body)
+    )
+    return response
+
+def lambda_handler(event, context):
+    # Replace 'QUEUE_URL' with the URL of your SQS queue
+    queue_url = 'https://sqs.us-east-1.amazonaws.com/581356085423/Patching_Ec2Instance_Queue'
+
+    # Example message in JSON format
+    message = {
+        "instance_id": "i-09db3ec6cdb1c6446",
+    }
+
+    # Sending the message to the SQS queue
+    response = send_sqs_message(queue_url, message)
+    print(f"Message sent to SQS queue with MessageId: {response['MessageId']}")
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps("Instance has been polled to SQS for Execution")
+    }
+
+
+
+
+
+Code-3 : To process the messages which are recived through SQS
+import os
+import json
+import boto3
+import requests
+from datetime import datetime
+
+def send_slack_message(webhook_url, message):
+    data = {'text': message}
+    response = requests.post(webhook_url, json=data)
+    return response
+
+def create_ami(instance_id):
+    ec2_client = boto3.client('ec2')
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S-%A')
+    ami_name_with_timestamp = f"My-Instance-Image-{timestamp}"
+    response = ec2_client.create_image(InstanceId=instance_id, Name=ami_name_with_timestamp, NoReboot=True)
+
+    # Add Name tag to the created AMI with the same name as AMI name
+    ami_id = response['ImageId']
+    ec2_client.create_tags(Resources=[ami_id], Tags=[{'Key': 'Name', 'Value': ami_name_with_timestamp}])
+
+    # Wait for the image to be available
+    ec2_client.get_waiter('image_available').wait(ImageIds=[ami_id])
+
+    return ami_id
+
+def deregister_instance_from_elb(instance_id, elb_name):
+    elbv2_client = boto3.client('elbv2')
+    response = elbv2_client.deregister_targets(
+        TargetGroupArn=elb_name,
+        Targets=[
+            {'Id': instance_id},
+        ]
+    )
+
+    # Wait for the instance to be fully deregistered from the ELB
+    deregister_waiter = elbv2_client.get_waiter('target_deregistered')
+    deregister_waiter.wait(TargetGroupArn=elb_name, Targets=[{'Id': instance_id}])
+
+    return response
+
+def register_instance_with_elb(instance_id, elb_name):
+    elbv2_client = boto3.client('elbv2')
+    response = elbv2_client.register_targets(
+        TargetGroupArn=elb_name,
+        Targets=[
+            {'Id': instance_id},
+        ]
+    )
+
+    # Wait for the instance to be fully registered with the ELB
+    register_waiter = elbv2_client.get_waiter('target_in_service')
+    register_waiter.wait(TargetGroupArn=elb_name, Targets=[{'Id': instance_id}])
+
+    return response
+
+def lambda_handler(event, context):
+    try:
+        # Get the Slack webhook URL and EC2 instance ID from environment variables
+        webhook_url = os.environ['SLACK_WEBHOOK_URL']
+        elb_name = 'arn:aws:elasticloadbalancing:us-east-1:581356085423:targetgroup/AumomationTargetGroup/6488bea8349fb47d'
+
+        # Process SQS event records
+        for record in event['Records']:
+            # Assuming your SQS messages are JSON-formatted
+            message_body = json.loads(record['body'])
+
+            # Extract EC2 instance ID from the SQS message
+            instance_id = message_body['instance_id']
+
+            # Deregister instance from ELB and wait for deregistration to complete
+            deregister_instance_from_elb(instance_id, elb_name)
+
+            # Send Slack notification after the instance is fully deregistered
+            slack_message_deregistered = f"Instance {instance_id} has been fully deregistered from ELB."
+            send_slack_message(webhook_url, slack_message_deregistered)
+
+            # Create the AMI with timestamp in the name and add the Name tag
+            ami_id = create_ami(instance_id)
+
+            # Append the instance ID to the message
+            slack_message_created_ami = f"AMI created with ID: {ami_id} for Instance: {instance_id}"
+            send_slack_message(webhook_url, slack_message_created_ami)
+
+            # Register instance back with ELB and wait for registration to complete
+            register_instance_with_elb(instance_id, elb_name)
+
+            # Send Slack notification after the instance is fully registered
+            slack_message_registered = f"Instance {instance_id} has been fully registered with ELB."
+            send_slack_message(webhook_url, slack_message_registered)
+
+            
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise
