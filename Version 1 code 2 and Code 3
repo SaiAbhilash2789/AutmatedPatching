@@ -1,0 +1,89 @@
+Working with few errors :
+
+
+Code -2 version : 1 : working :
+import boto3
+import json
+
+def send_sqs_message(queue_url, message_body):
+    sqs_client = boto3.client('sqs')
+    response = sqs_client.send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps(message_body)
+    )
+    return response
+
+def lambda_handler(event, context):
+    # Replace 'QUEUE_URL' with the URL of your SQS queue
+    queue_url = 'https://sqs.us-east-1.amazonaws.com/581356085423/Patching_Ec2Instance_Queue'
+
+    # Example message in JSON format
+    message = {
+        "instance_id": "i-09db3ec6cdb1c6446",
+        "ami_name": "My-Instance-Image"
+    }
+
+    # Sending the message to the SQS queue
+    response = send_sqs_message(queue_url, message)
+    print(f"Message sent to SQS queue with MessageId: {response['MessageId']}")
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps("AMI to be created soon")
+    }
+
+
+
+
+Code -3: Version1: working :
+import os
+import json
+import boto3
+import requests
+from datetime import datetime
+
+def create_ami(instance_id, ami_name):
+    ec2_client = boto3.client('ec2')
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S-%A')
+    ami_name_with_timestamp = f"{ami_name}-{timestamp}"
+    response = ec2_client.create_image(InstanceId=instance_id, Name=ami_name_with_timestamp, NoReboot=True)
+
+    # Add Name tag to the created AMI with the same name as AMI name
+    ami_id = response['ImageId']
+    ec2_client.create_tags(Resources=[ami_id], Tags=[{'Key': 'Name', 'Value': ami_name_with_timestamp}])
+
+    # Wait for the image to be available
+    ec2_client.get_waiter('image_available').wait(ImageIds=[ami_id])
+
+    return ami_id
+
+# Rest of the code remains the same
+# ...
+
+def lambda_handler(event, context):
+    try:
+        # Get the Slack webhook URL and EC2 instance ID from environment variables
+        webhook_url = os.environ['SLACK_WEBHOOK_URL']
+
+        # Process SQS event records
+        for record in event['Records']:
+            # Assuming your SQS messages are JSON-formatted
+            message_body = json.loads(record['body'])
+
+            # Extract EC2 instance ID and AMI name from the SQS message
+            instance_id = message_body['instance_id']
+            ami_name = message_body['ami_name']
+
+            # Create the AMI with timestamp in the name and add the Name tag
+            ami_id = create_ami(instance_id, ami_name)
+
+            # Wait for the image to be available
+            ec2_client.get_waiter('image_available').wait(ImageIds=[ami_id])
+
+            # Send the message to Slack after the AMI is available
+            slack_message = f"AMI created with ID: {ami_id}"
+            send_slack_message(webhook_url, slack_message)
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise
