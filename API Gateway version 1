@@ -1,0 +1,207 @@
+#API Gateway version 1
+#Code-1 :
+#Code -1:
+import os
+import json
+import logging
+from urllib.request import Request, urlopen
+
+SLACK_WEBHOOK_URL = os.environ['SLACK_WEBHOOK_URL']
+SLACK_CHANNEL = os.environ['SLACK_CHANNEL']
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event, context):
+    print("Received event: " + json.dumps(event, indent=2))
+
+    # Send Slack message with multiple approval buttons and one deny button
+    slack_message = {
+        "channel": SLACK_CHANNEL,
+        "text": "EC2 Instance is scheduled for Patching",
+        "attachments": [
+            {
+                "text": "Click on the preferred action below:",
+                "fallback": "Click on the preferred action below:",
+                "callback_id": "ec2_removal_approval_option_1",
+                "color": "#3AA3E3",
+                "attachment_type": "default",
+                "actions": [
+                    {
+                        "name": "approval_decision",
+                        "text": "APPROVE Option 1",
+                        "style": "primary",
+                        "type": "button",
+                        "value": "i-09db3ec6cdb1c6449",
+                        "confirm": {
+                            "title": "Are you sure?",
+                            "text": "Instance i-09db3ec6cdb1c6449 will be unavailable for some time until the patching gets completed",
+                            "ok_text": "Yes",
+                            "dismiss_text": "No"
+                        }
+                    },
+                    {
+                        "name": "approval_decision",
+                        "text": "DENY Option 1",
+                        "style": "danger",
+                        "type": "button",
+                        "value": "DENY"
+                    }
+                ]
+            },
+            {
+                "text": "Click on the preferred action below:",
+                "fallback": "Click on the preferred action below:",
+                "callback_id": "ec2_removal_approval_option_2",
+                "color": "#3AA3E3",
+                "attachment_type": "default",
+                "actions": [
+                    {
+                        "name": "approval_decision",
+                        "text": "APPROVE Option 2",
+                        "style": "primary",
+                        "type": "button",
+                        "value": "i-09db3ec6cdb1c6446",
+                        "confirm": {
+                            "title": "Are you sure?",
+                            "text": "Instance i-09db3ec6cdb1c6446 will be unavailable for some time until the patching gets completed",
+                            "ok_text": "Yes",
+                            "dismiss_text": "No"
+                        }
+                    },
+                    {
+                        "name": "approval_decision",
+                        "text": "DENY Option 2",
+                        "style": "danger",
+                        "type": "button",
+                        "value": "DENY"
+                    }
+                ]
+            },
+            {
+                "text": "Click on the preferred action below:",
+                "fallback": "Click on the preferred action below:",
+                "callback_id": "ec2_removal_approval_option_3",
+                "color": "#3AA3E3",
+                "attachment_type": "default",
+                "actions": [
+                    {
+                        "name": "approval_decision",
+                        "text": "APPROVE Option 3",
+                        "style": "primary",
+                        "type": "button",
+                        "value": "i-0afed6cbe7c0b5bd3",
+                        "confirm": {
+                            "title": "Are you sure?",
+                            "text": "Instance i-0afed6cbe7c0b5bd3 will be unavailable for some time until the patching gets completed",
+                            "ok_text": "Yes",
+                            "dismiss_text": "No"
+                        }
+                    },
+                    {
+                        "name": "approval_decision",
+                        "text": "DENY Option 3",
+                        "style": "danger",
+                        "type": "button",
+                        "value": "DENY"
+                    }
+                ]
+            }
+        ]
+    }
+
+    req = Request(SLACK_WEBHOOK_URL, json.dumps(slack_message).encode('utf-8'))
+    response = urlopen(req)
+    response.read()
+
+    return None
+
+
+
+
+
+
+
+
+
+Code -2:
+from urllib.parse import parse_qs
+import json
+import os
+import boto3
+
+SLACK_VERIFICATION_TOKEN = os.environ['SLACK_VERIFICATION_TOKEN']
+SQS_QUEUE_NAME = 'Patching_Ec2Instance_Queue'  # Replace with the actual SQS queue name
+
+def lambda_handler(event, context):
+    # Validate Slack token and handle potential JSONDecodeError
+    try:
+        body = parse_qs(event['body'])
+        payload = json.loads(body['payload'][0])
+    except (KeyError, ValueError) as e:
+        error_response = {
+            "isBase64Encoded": "false",
+            "statusCode": 400,
+            "body": "{\"error\": \"Invalid request payload.\"}"
+        }
+        return error_response
+
+    if SLACK_VERIFICATION_TOKEN != payload.get('token'):
+        error_response = {
+            "isBase64Encoded": "false",
+            "statusCode": 403,
+            "body": "{\"error\": \"This request does not include a valid verification token.\"}"
+        }
+        return error_response
+
+    # Mapping of action values to instance IDs
+    instance_ids = {
+        "i-09db3ec6cdb1c6446": "i-09db3ec6cdb1c6446",
+        "i-06512ccc545806a49": "i-06512ccc545806a49",
+        "i-0afed6cbe7c0b5bd3": "i-0afed6cbe7c0b5bd3"
+    }
+
+    action_value = payload['actions'][0]['value']
+    instance_id = instance_ids.get(action_value)
+
+    if instance_id:
+        try:
+            # Create an SQS client
+            sqs_client = boto3.client('sqs')
+
+            # Send the instance ID as a message to the SQS queue
+            sqs_client.send_message(
+                QueueUrl=get_sqs_queue_url(),
+                MessageBody=json.dumps({"instance_id": instance_id})
+            )
+
+            response_message = f"Your approval for instance {instance_id} has been processed successfully."
+            response = {
+                "isBase64Encoded": "false",
+                "statusCode": 200,
+                "body": json.dumps({"text": response_message})
+            }
+            return response
+
+        except Exception as e:
+            error_response = {
+                "isBase64Encoded": "false",
+                "statusCode": 500,
+                "body": "{\"error\": \"Internal server error. Could not process the request.\"}"
+            }
+            return error_response
+
+    else:
+        response_message = "Invalid action value. No action taken."
+        response = {
+            "isBase64Encoded": "false",
+            "statusCode": 400,
+            "body": json.dumps({"text": response_message})
+        }
+        return response
+
+def get_sqs_queue_url():
+    # Get the SQS queue URL using the queue name
+    sqs_client = boto3.client('sqs')
+    response = sqs_client.get_queue_url(QueueName=SQS_QUEUE_NAME)
+    return response['QueueUrl']
