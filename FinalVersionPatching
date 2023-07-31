@@ -1,0 +1,343 @@
+Code -1 :
+
+import os
+import json
+import logging
+from urllib.request import Request, urlopen
+
+SLACK_WEBHOOK_URL = os.environ['SLACK_WEBHOOK_URL']
+SLACK_CHANNEL = os.environ['SLACK_CHANNEL']
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Define the list of EC2 instances for approval options
+ec2_instances = [
+    "i-06512ccc545806a49",
+    "i-09db3ec6cdb1c6446",
+    "i-0afed6cbe7c0b5bd3",
+]
+
+def create_slack_message(instance_id):
+    return {
+        "channel": SLACK_CHANNEL,
+        "text": "EC2 Instance is scheduled for Patching",
+        "attachments": [
+            {
+                "text": "Click on the preferred action below:",
+                "fallback": "Click on the preferred action below:",
+                "callback_id": f"ec2_removal_approval_{instance_id}",
+                "color": "#3AA3E3",
+                "attachment_type": "default",
+                "actions": [
+                    {
+                        "name": "approval_decision",
+                        "text": f"APPROVE {instance_id}",
+                        "style": "primary",
+                        "type": "button",
+                        "value": instance_id,
+                        "confirm": {
+                            "title": "Are you sure?",
+                            "text": f"Instance {instance_id} will be unavailable for some time until the patching gets completed",
+                            "ok_text": "Yes",
+                            "dismiss_text": "No"
+                        }
+                    },
+                    {
+                        "name": "approval_decision",
+                        "text": f"DENY {instance_id}",
+                        "style": "danger",
+                        "type": "button",
+                        "value": "DENY"
+                    }
+                ]
+            }
+        ]
+    }
+
+def generate_new_message(old_message, approved_option_value):
+    # Copy the original message and modify the attachments based on the approval decision
+    new_message = old_message.copy()
+    new_attachments = []
+
+    for attachment in old_message['attachments']:
+        # Check if the value of the "APPROVE" button matches the approved_option_value
+        if 'actions' in attachment and len(attachment['actions']) > 0:
+            approve_button = attachment['actions'][0]
+            if 'name' in approve_button and approve_button['name'] == 'approval_decision' and approve_button['value'] == approved_option_value:
+                # If the option is approved, update the message text and show it in the new message
+                new_message['text'] = f"EC2 Instance {approved_option_value} has been approved for patching."
+                new_attachments.append(attachment)
+                break  # Stop iterating once the relevant instance is found
+            else:
+                # If the option is not approved, gray it out and show it in the new message
+                grayed_out_attachment = attachment.copy()
+                grayed_out_attachment['actions'][0]['style'] = 'danger'
+                new_attachments.append(grayed_out_attachment)
+
+    new_message['attachments'] = new_attachments
+    return new_message
+
+def process_user_response(payload, slack_message):
+    if 'actions' in payload and len(payload['actions']) > 0:
+        approval_decision = payload['actions'][0]['value']
+        if approval_decision.startswith('i-'):
+            return generate_new_message(slack_message, approval_decision)
+    return slack_message
+
+def lambda_handler(event, context):
+    print("Received event: " + json.dumps(event, indent=2))
+
+    # Process user responses for each EC2 instance, and send the updated messages to Slack
+    for instance_id in ec2_instances:
+        slack_message = create_slack_message(instance_id)
+
+        # Simulated payload for testing the user's response for the current instance_id
+        sample_payload = {
+            "actions": [
+                {
+                    "name": "approval_decision",
+                    "value": instance_id
+                }
+            ]
+        }
+
+        slack_message = process_user_response(sample_payload, slack_message)
+        req = Request(SLACK_WEBHOOK_URL, json.dumps(slack_message).encode('utf-8'))
+        response = urlopen(req)
+        response.read()
+
+    return None
+
+
+
+
+
+
+
+
+
+
+
+Code -2 :
+from urllib.parse import parse_qs
+import json
+import os
+import boto3
+
+SLACK_VERIFICATION_TOKEN = os.environ['SLACK_VERIFICATION_TOKEN']
+SQS_QUEUE_NAME = 'Patching_Ec2Instance_Queue'  # Replace with the actual SQS queue name
+
+def lambda_handler(event, context):
+    # Validate Slack token and handle potential JSONDecodeError
+    try:
+        body = parse_qs(event['body'])
+        payload = json.loads(body['payload'][0])
+    except (KeyError, ValueError) as e:
+        error_response = {
+            "isBase64Encoded": "false",
+            "statusCode": 400,
+            "body": "{\"error\": \"Invalid request payload.\"}"
+        }
+        return error_response
+
+    if SLACK_VERIFICATION_TOKEN != payload.get('token'):
+        error_response = {
+            "isBase64Encoded": "false",
+            "statusCode": 403,
+            "body": "{\"error\": \"This request does not include a valid verification token.\"}"
+        }
+        return error_response
+
+    # Mapping of action values to instance IDs
+    instance_ids = {
+        "i-09db3ec6cdb1c6446": "i-09db3ec6cdb1c6446",
+        "i-06512ccc545806a49": "i-06512ccc545806a49",
+        "i-0afed6cbe7c0b5bd3": "i-0afed6cbe7c0b5bd3"
+    }
+
+    action_value = payload['actions'][0]['value']
+    instance_id = instance_ids.get(action_value)
+
+    if instance_id:
+        try:
+            # Create an SQS client
+            sqs_client = boto3.client('sqs')
+
+            # Send the instance ID as a message to the SQS queue
+            sqs_client.send_message(
+                QueueUrl=get_sqs_queue_url(),
+                MessageBody=json.dumps({"instance_id": instance_id})
+            )
+
+            response_message = f"Your approval for instance {instance_id} has been processed successfully."
+            response = {
+                "isBase64Encoded": "false",
+                "statusCode": 200,
+                "body": json.dumps({"text": response_message})
+            }
+            return response
+
+        except Exception as e:
+            error_response = {
+                "isBase64Encoded": "false",
+                "statusCode": 500,
+                "body": "{\"error\": \"Internal server error. Could not process the request.\"}"
+            }
+            return error_response
+
+    else:
+        response_message = "Invalid action value. No action taken."
+        response = {
+            "isBase64Encoded": "false",
+            "statusCode": 400,
+            "body": json.dumps({"text": response_message})
+        }
+        return response
+
+def get_sqs_queue_url():
+    # Get the SQS queue URL using the queue name
+    sqs_client = boto3.client('sqs')
+    response = sqs_client.get_queue_url(QueueName=SQS_QUEUE_NAME)
+    return response['QueueUrl']
+
+
+
+
+
+
+
+
+
+
+Code -3 :
+import os
+import json
+import boto3
+import requests
+from datetime import datetime
+
+def send_slack_message(webhook_url, message):
+    data = {'text': message}
+    response = requests.post(webhook_url, json=data)
+    return response
+
+def create_ami(instance_id):
+    ec2_client = boto3.client('ec2')
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S-%A')
+    ami_name_with_timestamp = f"My-Instance-Image-{timestamp}"
+    response = ec2_client.create_image(InstanceId=instance_id, Name=ami_name_with_timestamp, NoReboot=True)
+
+    # Add Name tag to the created AMI with the same name as AMI name
+    ami_id = response['ImageId']
+    ec2_client.create_tags(Resources=[ami_id], Tags=[{'Key': 'Name', 'Value': ami_name_with_timestamp}])
+
+    # Wait for the image to be available
+    ec2_client.get_waiter('image_available').wait(ImageIds=[ami_id])
+
+    return ami_id
+
+def deregister_instance_from_elb(instance_id, elb_name):
+    elbv2_client = boto3.client('elbv2')
+    response = elbv2_client.deregister_targets(
+        TargetGroupArn=elb_name,
+        Targets=[
+            {'Id': instance_id},
+        ]
+    )
+
+    # Wait for the instance to be fully deregistered from the ELB
+    deregister_waiter = elbv2_client.get_waiter('target_deregistered')
+    deregister_waiter.wait(TargetGroupArn=elb_name, Targets=[{'Id': instance_id}])
+
+    return response
+
+def register_instance_with_elb(instance_id, elb_name):
+    elbv2_client = boto3.client('elbv2')
+    response = elbv2_client.register_targets(
+        TargetGroupArn=elb_name,
+        Targets=[
+            {'Id': instance_id},
+        ]
+    )
+
+    # Wait for the instance to be fully registered with the ELB
+    register_waiter = elbv2_client.get_waiter('target_in_service')
+    register_waiter.wait(TargetGroupArn=elb_name, Targets=[{'Id': instance_id}])
+
+    return response
+
+def run_ssm_patch_baseline(instance_id):
+    ssm_client = boto3.client('ssm')
+    response = ssm_client.send_command(
+        InstanceIds=[instance_id],
+        DocumentName='AWS-RunPatchBaseline',
+        Comment='Patching operation using Systems Manager',
+        Parameters={
+            "Operation": ["Install"],
+            "SnapshotId": [""],
+            "InstallOverrideList": [""],
+            "AssociationId": [""],
+            "BaselineOverride": [""],
+            "RebootOption": ["RebootIfNeeded"]
+        },
+        TimeoutSeconds=600,
+        MaxConcurrency="50",
+        MaxErrors="0"
+    )
+
+    command_id = response['Command']['CommandId']
+
+    # Wait for the command to be executed
+    ssm_client.get_waiter('command_executed').wait(InstanceId=instance_id, CommandId=command_id)
+
+    return response
+
+
+def lambda_handler(event, context):
+    try:
+        # Get the Slack webhook URL and EC2 instance ID from environment variables
+        webhook_url = os.environ['SLACK_WEBHOOK_URL']
+        elb_name = 'arn:aws:elasticloadbalancing:us-east-1:581356085423:targetgroup/AumomationTargetGroup/6488bea8349fb47d'
+
+        # Process SQS event records
+        for record in event['Records']:
+            # Assuming your SQS messages are JSON-formatted
+            message_body = json.loads(record['body'])
+
+            # Extract EC2 instance ID from the SQS message
+            instance_id = message_body['instance_id']
+
+            # Deregister instance from ELB and wait for deregistration to complete
+            deregister_instance_from_elb(instance_id, elb_name)
+
+            # Send Slack notification after the instance is fully deregistered
+            slack_message_deregistered = f"Ec2 Instance {instance_id} has been sucessfully de-registered from ELB"
+            send_slack_message(webhook_url, slack_message_deregistered)
+
+            # Create the AMI with timestamp in the name and add the Name tag
+            ami_id = create_ami(instance_id)
+
+            # Append the instance ID to the message
+            slack_message_created_ami = f"AMI has been created with ID: {ami_id} for Ec2 Instance: {instance_id}"
+            send_slack_message(webhook_url, slack_message_created_ami)
+
+            # Run patching operations on the EC2 instance using Systems Manager
+            response = run_ssm_patch_baseline(instance_id)
+            command_id = response['Command']['CommandId']
+
+            # Send a Slack notification about the patching operation
+            slack_message_patching = f"Latest vulnerbility fixes have applied to the Ec2 Instances: {instance_id} "
+            send_slack_message(webhook_url, slack_message_patching)
+
+            # Register instance back with ELB and wait for registration to complete
+            register_instance_with_elb(instance_id, elb_name)
+
+            # Send Slack notification after the instance is fully registered
+            slack_message_registered = f"Ec2 Instance {instance_id} has been successfully registered with ELB"
+            send_slack_message(webhook_url, slack_message_registered)
+
+            
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise
