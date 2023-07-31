@@ -341,3 +341,125 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"Error: {str(e)}")
         raise
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Code -1 : Version -2 :
+import os
+import json
+import logging
+from urllib.request import Request, urlopen
+
+SLACK_WEBHOOK_URL = os.environ['SLACK_WEBHOOK_URL']
+SLACK_CHANNEL = os.environ['SLACK_CHANNEL']
+ec2_instances = os.environ['EC2_INSTANCES'].split(',')
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
+
+def create_slack_message(instance_id):
+    return {
+        "channel": SLACK_CHANNEL,
+        "text": "EC2 Instance is scheduled for Patching",
+        "attachments": [
+            {
+                "text": "Click on the preferred action below:",
+                "fallback": "Click on the preferred action below:",
+                "callback_id": f"ec2_removal_approval_{instance_id}",
+                "color": "#3AA3E3",
+                "attachment_type": "default",
+                "actions": [
+                    {
+                        "name": "approval_decision",
+                        "text": f"APPROVE {instance_id}",
+                        "style": "primary",
+                        "type": "button",
+                        "value": instance_id,
+                        "confirm": {
+                            "title": "Are you sure?",
+                            "text": f"Instance {instance_id} will be unavailable for some time until the patching gets completed",
+                            "ok_text": "Yes",
+                            "dismiss_text": "No"
+                        }
+                    },
+                    {
+                        "name": "approval_decision",
+                        "text": f"DENY {instance_id}",
+                        "style": "danger",
+                        "type": "button",
+                        "value": "DENY"
+                    }
+                ]
+            }
+        ]
+    }
+
+def generate_new_message(old_message, approved_option_value):
+    # Copy the original message and modify the attachments based on the approval decision
+    new_message = old_message.copy()
+    new_attachments = []
+
+    for attachment in old_message['attachments']:
+        # Check if the value of the "APPROVE" button matches the approved_option_value
+        if 'actions' in attachment and len(attachment['actions']) > 0:
+            approve_button = attachment['actions'][0]
+            if 'name' in approve_button and approve_button['name'] == 'approval_decision' and approve_button['value'] == approved_option_value:
+                # If the option is approved, update the message text and show it in the new message
+                new_message['text'] = f"EC2 Instance {approved_option_value} has been approved for patching."
+                new_attachments.append(attachment)
+                break  # Stop iterating once the relevant instance is found
+            else:
+                # If the option is not approved, gray it out and show it in the new message
+                grayed_out_attachment = attachment.copy()
+                grayed_out_attachment['actions'][0]['style'] = 'danger'
+                new_attachments.append(grayed_out_attachment)
+
+    new_message['attachments'] = new_attachments
+    return new_message
+
+def process_user_response(payload, slack_message):
+    if 'actions' in payload and len(payload['actions']) > 0:
+        approval_decision = payload['actions'][0]['value']
+        if approval_decision.startswith('i-'):
+            return generate_new_message(slack_message, approval_decision)
+    return slack_message
+
+def lambda_handler(event, context):
+    print("Received event: " + json.dumps(event, indent=2))
+
+    # Process user responses for each EC2 instance, and send the updated messages to Slack
+    for instance_id in ec2_instances:
+        slack_message = create_slack_message(instance_id)
+
+        # Simulated payload for testing the user's response for the current instance_id
+        sample_payload = {
+            "actions": [
+                {
+                    "name": "approval_decision",
+                    "value": instance_id
+                }
+            ]
+        }
+
+        slack_message = process_user_response(sample_payload, slack_message)
+        req = Request(SLACK_WEBHOOK_URL, json.dumps(slack_message).encode('utf-8'))
+        response = urlopen(req)
+        response.read()
+
+    return None
