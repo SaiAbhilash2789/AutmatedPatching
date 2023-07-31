@@ -421,7 +421,7 @@ def generate_new_message(old_message, approved_option_value):
             approve_button = attachment['actions'][0]
             if 'name' in approve_button and approve_button['name'] == 'approval_decision' and approve_button['value'] == approved_option_value:
                 # If the option is approved, update the message text and show it in the new message
-                new_message['text'] = f"EC2 Instance {approved_option_value} has been approved for patching."
+                new_message['text'] = f"EC2 Instance {approved_option_value} has been scheduled for patching."
                 new_attachments.append(attachment)
                 break  # Stop iterating once the relevant instance is found
             else:
