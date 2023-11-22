@@ -1,0 +1,7 @@
+'{{resolve:secretsmanage'{{resolve:secretsmanager:github:SecretString:token}}r:github:SecretString:token}}
+
+
+"{{resolve:secretsmanager:reflect-git-svc-user-token:token}}"
+
+
+CLIENT_ERROR: Get "https://github.com/SaiAbhilash2789/ReflectRep.git/info/refs?service=git-upload-pack": dial tcp 140.82.114.3:443: i/o timeout for primary source and source version master	
